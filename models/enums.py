@@ -14,3 +14,9 @@ class Status(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+class AgentStatus(str, Enum):
+    IDLE = "idle"       # Ready and waiting for tasks
+    BUSY = "busy"       # Currently executing a task
+    OFFLINE = "offline" # Deregistered or unresponsive (missed heartbeat)

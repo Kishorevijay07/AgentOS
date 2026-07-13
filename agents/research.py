@@ -3,10 +3,11 @@ from __future__ import annotations
 from typing import Any, List
 
 from agents.base import BaseAgent
+from agents.worker import WorkerMixin
 from models.task import Task
 
 
-class ResearchAgent(BaseAgent):
+class ResearchAgent(WorkerMixin, BaseAgent):
     """
     Handles research-oriented tasks such as information gathering,
     web lookups, and summarising external sources.

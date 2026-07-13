@@ -3,10 +3,11 @@ from __future__ import annotations
 from typing import Any, List
 
 from agents.base import BaseAgent
+from agents.worker import WorkerMixin
 from models.task import Task
 
 
-class CodingAgent(BaseAgent):
+class CodingAgent(WorkerMixin, BaseAgent):
     """
     Handles code-generation tasks such as implementing features,
     writing boilerplate, and refactoring existing code.

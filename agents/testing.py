@@ -3,10 +3,11 @@ from __future__ import annotations
 from typing import Any, List
 
 from agents.base import BaseAgent
+from agents.worker import WorkerMixin
 from models.task import Task
 
 
-class TestingAgent(BaseAgent):
+class TestingAgent(WorkerMixin, BaseAgent):
     """
     Handles quality-assurance tasks such as writing unit tests,
     integration tests, and validating edge cases.

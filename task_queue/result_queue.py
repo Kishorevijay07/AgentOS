@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from collections import deque
 from threading import Lock
 from typing import Deque, List, Optional
@@ -7,7 +8,34 @@ from typing import Deque, List, Optional
 from models.result import AgentResult
 
 
-class ResultQueue:
+class AbstractResultQueue(ABC):
+    """
+    Contract that every Result Queue backend must satisfy.
+
+    Decouples workers from the Supervisor: workers ``push`` results, the
+    Supervisor ``drain``s them.  A future ``RedisResultQueue`` can slot in at
+    the construction site so workers and the Supervisor can live in different
+    processes without any consumer change.
+    """
+
+    @abstractmethod
+    def push(self, result: AgentResult) -> None:
+        """Enqueue a worker result."""
+
+    @abstractmethod
+    def pop(self) -> Optional[AgentResult]:
+        """Dequeue and return the oldest result, or ``None`` if empty."""
+
+    @abstractmethod
+    def drain(self) -> List[AgentResult]:
+        """Return all pending results and clear the queue in one operation."""
+
+    @abstractmethod
+    def is_empty(self) -> bool:
+        """Return ``True`` when no results are waiting."""
+
+
+class ResultQueue(AbstractResultQueue):
     """
     Thread-safe queue that decouples workers from the Supervisor.
 

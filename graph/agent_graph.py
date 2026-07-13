@@ -8,9 +8,9 @@ from agents.planner import PlannerAgent
 from agents.reflection import ReflectionAgent
 from graph.state import GraphState
 from models.task import Task
-from queue.result_queue import ResultQueue
-from queue.task_queue import TaskQueue
-from supervisor.supervisor import Supervisor
+from kernel.dispatcher import Dispatcher
+from task_queue.result_queue import ResultQueue
+from task_queue.task_queue import TaskQueue
 
 
 class AgentGraph:
@@ -45,13 +45,13 @@ class AgentGraph:
     def __init__(
         self,
         planner: PlannerAgent,
-        supervisor: Supervisor,
+        dispatcher: Dispatcher,
         reflection: ReflectionAgent,
         task_queue: TaskQueue,
         result_queue: ResultQueue,
     ) -> None:
         self._planner = planner
-        self._supervisor = supervisor
+        self._dispatcher = dispatcher
         self._reflection = reflection
         self._task_queue = task_queue
         self._result_queue = result_queue
@@ -144,7 +144,7 @@ class AgentGraph:
         dict
             Updated ``pending_count`` (tasks still waiting in the queue).
         """
-        self._supervisor.run_once()
+        self._dispatcher.dispatch_next()
         return {"pending_count": len(self._task_queue)}
 
     def _reflection_node(self, state: GraphState) -> Dict[str, Any]:

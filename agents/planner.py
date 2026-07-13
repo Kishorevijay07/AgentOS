@@ -3,10 +3,11 @@ from __future__ import annotations
 from typing import Any, List, Tuple
 
 from agents.base import BaseAgent
+from agents.worker import WorkerMixin
 from models.task import Task
 
 
-class PlannerAgent(BaseAgent):
+class PlannerAgent(WorkerMixin, BaseAgent):
     """
     Decomposes a high-level goal string into a concrete list of Tasks.
 
@@ -42,7 +43,7 @@ class PlannerAgent(BaseAgent):
         return self._decompose_goal(task.description)
 
     # ------------------------------------------------------------------ #
-    #  Private helpers
+    #  Private helpers                                                    #
     # ------------------------------------------------------------------ #
 
     def _decompose_goal(self, goal: str) -> List[Task]:

@@ -3,11 +3,12 @@ from __future__ import annotations
 from typing import Any, List, Optional
 
 from agents.base import BaseAgent
+from agents.worker import WorkerMixin
 from models.result import AgentResult
 from models.task import Task
 
 
-class ReflectionAgent(BaseAgent):
+class ReflectionAgent(WorkerMixin, BaseAgent):
     """
     Evaluates the output quality of a completed task.
 
@@ -72,7 +73,7 @@ class ReflectionAgent(BaseAgent):
         return None
 
     # ------------------------------------------------------------------ #
-    #  Private helpers
+    #  Private helpers                                                    #
     # ------------------------------------------------------------------ #
 
     def _is_acceptable(self, output: str) -> bool:

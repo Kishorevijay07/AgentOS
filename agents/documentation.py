@@ -3,10 +3,11 @@ from __future__ import annotations
 from typing import Any, List
 
 from agents.base import BaseAgent
+from agents.worker import WorkerMixin
 from models.task import Task
 
 
-class DocumentationAgent(BaseAgent):
+class DocumentationAgent(WorkerMixin, BaseAgent):
     """
     Handles documentation tasks such as writing docstrings, README files,
     API references, and user guides.
