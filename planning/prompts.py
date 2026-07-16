@@ -57,7 +57,11 @@ class DefaultPlanningPrompt:
         parts = [self._INSTRUCTIONS.format(max_steps=goal.max_steps)]
         if self._capability_hint:
             parts.append(
-                "Available capability tags: " + ", ".join(self._capability_hint) + "."
+                "The worker pool understands ONLY these capability tags — every "
+                "step's \"capabilities\" MUST use tags from this exact list "
+                "(never invent new ones): "
+                + ", ".join(self._capability_hint)
+                + "."
             )
         if goal.context:
             parts.append(f"CONTEXT:\n{goal.context}")

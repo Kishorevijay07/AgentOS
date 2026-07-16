@@ -197,8 +197,10 @@ distributed layer running full DAGs across simulated remote workers.
 
 **Stubbed on purpose (the slots are carved, the brains come next):**
 
-- Agents currently return placeholder strings — no real LLM calls yet.
-  `LLMPlanner` is fully built but runs against a pluggable `LLMClient` port.
+- Intelligence is opt-in: `OpenRouterLLMClient` (set `OPENROUTER_API_KEY` in
+  `.env`, see `.env.example`, then run `python examples/llm_demo.py`) powers
+  the planner and the coding/research workers; without a key, agents fall back
+  to deterministic placeholders so everything still runs offline.
 - `Transport` has only the in-memory implementation; Redis/Kafka are designed
   for but not yet written.
 - Task timeouts are **cooperative** (Python threads can't be force-killed);
@@ -213,7 +215,7 @@ distributed layer running full DAGs across simulated remote workers.
 |---|---|
 | v0.4 ✅ | Planner, Task Graph, Worker Runtime, Execution Scheduler |
 | v0.5 ✅ | Distributed runtime: transport, discovery, heartbeats, remote workers |
-| v0.6 | **Real intelligence**: Anthropic `LLMClient` wired into `LLMPlanner` + first LLM-backed worker |
+| v0.6 | **Real intelligence**: OpenRouter `LLMClient` wired into `LLMPlanner` + LLM-backed coding/research workers |
 | v0.7 | Scheduler unification + `RedisTransport` (prove the broker swap) |
 | v0.8 | Checkpointing, reflection, dynamic replanning |
 | v1.0 | HTTP API, Kubernetes deployment, plugin workers |
