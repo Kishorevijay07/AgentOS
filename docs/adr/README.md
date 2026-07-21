@@ -29,3 +29,4 @@ we remember *why* AgentOS is shaped the way it is — not just *what* the code d
 | [0011](0011-unified-scheduler-dispatch-backends.md) | Unified scheduler with dispatch backends | Accepted |
 | [0012](0012-reflection-dynamic-replanning.md) | Reflection and dynamic replanning (the autonomous loop) | Accepted |
 | [0013](0013-checkpointing-and-resume.md) | Checkpointing and crash-resume | Accepted |
+| [0014](0014-http-api-control-plane.md) | HTTP API control plane | Accepted |

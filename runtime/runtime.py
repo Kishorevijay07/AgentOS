@@ -235,9 +235,14 @@ class DefaultWorkerRuntime(AbstractWorkerRuntime):
             )
             handle.current_task = None
             handle.touch_heartbeat(now)
-            # A timeout leaves the worker suspect → FAILED; a plain task error
-            # leaves the worker healthy → IDLE.
-            handle.transition(WorkerState.FAILED if timed_out else WorkerState.IDLE)
+            # Only release a worker that is still BUSY. If it was moved concurrently
+            # (e.g. runtime.shutdown() set it OFFLINE, or it was paused) while the
+            # task ran outside the lock, respect that state rather than forcing a
+            # (possibly illegal) transition back to IDLE.
+            if handle.state == WorkerState.BUSY:
+                # A timeout leaves the worker suspect → FAILED; a plain task error
+                # leaves the worker healthy → IDLE.
+                handle.transition(WorkerState.FAILED if timed_out else WorkerState.IDLE)
 
         return ExecutionOutcome(
             task_id=task.id, worker_id=worker_id, success=success, output=output,

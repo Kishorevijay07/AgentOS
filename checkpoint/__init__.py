@@ -18,6 +18,7 @@ Quick start
 """
 
 from checkpoint.models import Checkpoint
+from checkpoint.redis_store import RedisCheckpointStore
 from checkpoint.store import (
     CheckpointStore,
     FileCheckpointStore,
@@ -29,4 +30,5 @@ __all__ = [
     "CheckpointStore",
     "FileCheckpointStore",
     "InMemoryCheckpointStore",
+    "RedisCheckpointStore",
 ]

@@ -157,6 +157,30 @@ scheduler.start()
 scheduler.run_until_idle()
 ```
 
+### Run it as an HTTP service
+
+```bash
+uvicorn api.app:app --reload            # starts on http://127.0.0.1:8000
+```
+
+Then submit a goal and watch it run (interactive API docs at `/docs`):
+
+```bash
+# submit a goal -> returns a run_id and the initial plan
+curl -X POST http://127.0.0.1:8000/goals \
+     -H "Content-Type: application/json" \
+     -d '{"goal": "Build a REST API for a blog"}'
+
+curl http://127.0.0.1:8000/runs/<run_id>            # status + health
+curl http://127.0.0.1:8000/runs/<run_id>/tasks      # per-task states
+curl http://127.0.0.1:8000/runs/<run_id>/traces     # execution traces
+curl -N http://127.0.0.1:8000/runs/<run_id>/events/stream   # live SSE stream
+```
+
+Set `OPENROUTER_API_KEY` in `.env` and the API automatically uses real LLM
+planning, reflection, and workers; without a key it runs in deterministic
+template mode.
+
 ## Package map
 
 | Package | What it is (plain English) |
@@ -166,7 +190,8 @@ scheduler.run_until_idle()
 | `task_graph/` | The dependency map. A thread-safe DAG that knows which tasks are ready, detects cycles, unlocks dependents on completion. |
 | `scheduling/` | The foreman. Matches ready tasks to workers **by capability** (never by name) behind a pluggable dispatch backend (local ↔ transport), with retry policies. |
 | `reflection/` | The critic. After a task runs, judges the output and — when it falls short — injects corrective/follow-up tasks into the live graph (the autonomous loop), bounded by a replan budget. |
-| `checkpoint/` | The save-game. Snapshots the graph (with per-task history) + reflection budget to a pluggable store (atomic JSON file today); a crashed run resumes exactly where it left off. |
+| `checkpoint/` | The save-game. Snapshots the graph (with per-task history) + reflection budget to a pluggable store (atomic JSON file, or Redis for cross-machine resume); a crashed run resumes exactly where it left off. |
+| `api/` | The front desk. A FastAPI control plane: POST a goal, poll run status / tasks / traces, stream events (SSE). Turns AgentOS from a library into a running service. |
 | `runtime/` | The site office. Manages the worker pool: lifecycle, timeouts, crash isolation, health checks, metrics. |
 | `distributed/` | The radio system. Typed message protocol, pluggable transport, worker discovery, heartbeats, remote worker nodes. |
 | `events/` | The announcement board. Publish/subscribe event bus — components react without knowing each other. |
@@ -228,7 +253,7 @@ distributed layer running full DAGs across simulated remote workers.
 | v0.7 ✅ | One unified scheduler behind a `DispatchBackend` seam (local ↔ transport) + `RedisTransport` |
 | v0.8 ✅ | **The autonomous loop**: reflection + dynamic replanning (inject corrective tasks into the live graph, bounded by a replan budget) |
 | v0.9 ✅ | **Checkpointing & resume**: snapshot the graph (with per-task history) + reflection budget; survive a crash and resume without re-doing work |
-| v1.0 | HTTP API, Kubernetes deployment, plugin workers |
+| v1.0 ✅ | **HTTP API**: a FastAPI control plane (POST a goal, poll status/tasks/traces, stream events) + `RedisCheckpointStore` for cross-machine resume |
 
 ## Documentation
 
