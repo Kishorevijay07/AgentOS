@@ -201,13 +201,16 @@ distributed layer running full DAGs across simulated remote workers.
   `.env`, see `.env.example`, then run `python examples/llm_demo.py`) powers
   the planner and the coding/research workers; without a key, agents fall back
   to deterministic placeholders so everything still runs offline.
-- `Transport` has only the in-memory implementation; Redis/Kafka are designed
-  for but not yet written.
+- `RedisTransport` ships and is fully covered by tests against a scripted fake
+  Redis client, plus runnable multi-process scripts (`scripts/run_redis_worker.py`
+  / `run_redis_coordinator.py`) — but it has not yet been exercised against a
+  live Redis server in CI. Kafka remains designed-for, not written.
 - Task timeouts are **cooperative** (Python threads can't be force-killed);
   hard isolation needs the planned process-based executor.
-- `api/`, `memory/`, `examples/`, `scripts/` are empty placeholders.
-- Two scheduler implementations (in-process and distributed) overlap and are
-  slated for unification.
+- `api/` and `memory/` are empty placeholders.
+- `scheduler/` and `agents/registry.py` are a deprecated legacy layer
+  (superseded by the unified scheduler + worker runtime, see ADR-0011) kept
+  for compatibility pending a cleanup pass.
 
 ## Roadmap
 
@@ -216,7 +219,7 @@ distributed layer running full DAGs across simulated remote workers.
 | v0.4 ✅ | Planner, Task Graph, Worker Runtime, Execution Scheduler |
 | v0.5 ✅ | Distributed runtime: transport, discovery, heartbeats, remote workers |
 | v0.6 | **Real intelligence**: OpenRouter `LLMClient` wired into `LLMPlanner` + LLM-backed coding/research workers |
-| v0.7 | Scheduler unification + `RedisTransport` (prove the broker swap) |
+| v0.7 ✅ | One unified scheduler behind a `DispatchBackend` seam (local ↔ transport) + `RedisTransport` |
 | v0.8 | Checkpointing, reflection, dynamic replanning |
 | v1.0 | HTTP API, Kubernetes deployment, plugin workers |
 

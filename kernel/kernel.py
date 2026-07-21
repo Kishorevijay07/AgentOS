@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import threading
 from collections import Counter
-from typing import Dict, List, Optional
+from typing import List, Optional
 
-from agents.base import BaseAgent
 from config.settings import KernelSettings
 from events.event import Event
 from events.event_type import EventType
 from kernel.context import KernelContext
-from kernel.dispatcher import Dispatcher
 from kernel.lifecycle import KernelState, Lifecycle
 from kernel.tick import Tick, TickResult
-from models.result import AgentResult
 from models.task import Task
+from runtime.outcome import ExecutionOutcome
+from runtime.worker import Worker
+from task_graph.adapter import GraphTaskQueue
 
 
 class Kernel:
@@ -21,27 +21,28 @@ class Kernel:
     The AgentOS Kernel — the runtime heartbeat.
 
     Like an OS kernel it is deliberately unintelligent: it **coordinates** and
-    nothing more. It does not know how to research or write code — workers do
-    that. The Kernel only:
+    nothing more. Since v0.7 it drives the unified graph runtime (ADR-0011):
+    work lives in the task-graph DAG, workers live in the worker runtime, and
+    one :class:`~scheduling.scheduler.ExecutionScheduler` connects them through
+    a pluggable dispatch backend. The Kernel only:
 
     * owns the object graph (via a single :class:`KernelContext`),
     * runs the lifecycle (BOOTING → RUNNING → PAUSED → STOPPING → STOPPED),
-    * turns the loop as discrete **ticks** (assign → collect → heartbeat),
+    * turns the loop as discrete **ticks** (assign → collect → health),
     * and monitors health.
 
     Two ways to drive it
     --------------------
     * **Manual / deterministic** — call :meth:`tick` to advance exactly one
       iteration (ideal for tests and simulation), or :meth:`run_until_idle` to
-      tick until the queue drains.
+      tick until the graph drains.
     * **Threaded** — :meth:`run` starts a background loop that ticks every
       ``settings.tick_interval_seconds``; :meth:`pause`, :meth:`resume`, and
       :meth:`stop` steer it.
 
     Dependency injection & swappability are handled entirely by the
-    :class:`KernelContext` (see ADR-0008): construct one with an override to
-    point a subsystem at Redis/Kafka; the Kernel and every module below it are
-    untouched.
+    :class:`KernelContext` (ADR-0008): construct one with an override to point a
+    subsystem at a distributed backend; the Kernel is untouched.
     """
 
     def __init__(
@@ -51,18 +52,18 @@ class Kernel:
         settings: Optional[KernelSettings] = None,
     ) -> None:
         self._ctx = context or KernelContext.in_memory(settings)
-        self._dispatcher = Dispatcher(self._ctx)
-        self._tick = Tick(self._ctx, self._dispatcher)
+        self._tick = Tick(self._ctx)
         self._lifecycle = Lifecycle()
-
-        # agent_id → live agent, so the Kernel can drive lifecycle on shutdown.
-        self._agents: Dict[str, BaseAgent] = {}
 
         # Threaded-loop machinery.
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._tick_count = 0
         self._tick_lock = threading.Lock()
+
+        # Lazy adapter so callers (e.g. the PlanningService) can seed the graph
+        # through the AbstractTaskQueue port they already speak.
+        self._task_queue_adapter: Optional[GraphTaskQueue] = None
 
         self._ctx.logger.info("Kernel constructed (state=%s).", self.state.value)
 
@@ -73,30 +74,20 @@ class Kernel:
     def boot(self) -> "Kernel":
         """Complete boot: BOOTING → RUNNING. Returns ``self`` for fluent setup."""
         if self._lifecycle.is_(KernelState.BOOTING):
+            self._ctx.scheduler.start()
             self._lifecycle.transition(KernelState.RUNNING)
-        self._ctx.logger.info(
-            "Kernel booted → RUNNING (%d agent(s)).", len(self._agents)
-        )
+        self._ctx.logger.info("Kernel booted → RUNNING.")
         return self
 
-    def register_agent(self, agent: BaseAgent) -> str:
+    def register_agent(self, agent: Worker) -> str:
         """
         Admit *agent* to the worker pool and return its ``agent_id``.
 
-        Registers it, wires its registry/bus integration, and initialises it
-        (``INITIALIZING → IDLE`` + ``AGENT_ONLINE``).
+        Delegates to the worker runtime, which initialises the worker, isolates
+        init failures, and publishes ``AGENT_ONLINE``.
         """
-        agent_id = self._ctx.registry.register(agent)
-        configure = getattr(agent, "_configure_worker", None)
-        if callable(configure):
-            configure(
-                registry=self._ctx.registry, bus=self._ctx.event_bus, agent_id=agent_id
-            )
-        agent.initialize()
-        self._agents[agent_id] = agent
-        self._ctx.logger.info(
-            "Registered agent %s (caps=%s).", agent_id, list(agent.capabilities)
-        )
+        agent_id = self._ctx.worker_runtime.register_worker(agent)
+        self._ctx.logger.info("Registered agent %s.", agent_id)
         return agent_id
 
     def run(self) -> "Kernel":
@@ -106,7 +97,7 @@ class Kernel:
         Idempotent: calling ``run`` on an already-running kernel is a no-op.
         """
         if self._lifecycle.is_(KernelState.BOOTING):
-            self._lifecycle.transition(KernelState.RUNNING)
+            self.boot()
         if not self._lifecycle.is_(KernelState.RUNNING):
             raise RuntimeError(f"Cannot run() from state {self.state.value}.")
         if self._thread is not None and self._thread.is_alive():
@@ -149,15 +140,12 @@ class Kernel:
 
     def shutdown(self) -> None:
         """
-        Full teardown: stop the loop, then shut every worker down
+        Full teardown: stop the loop, the scheduler backend, then every worker
         (``AGENT_OFFLINE`` per agent). Leaves the kernel STOPPED.
         """
         self.stop()
-        for agent_id, agent in list(self._agents.items()):
-            try:
-                agent.shutdown()
-            except Exception:  # noqa: BLE001
-                self._ctx.logger.exception("Agent %s raised during shutdown.", agent_id)
+        self._ctx.scheduler.stop()
+        self._ctx.worker_runtime.shutdown()
         self._ctx.logger.info("Kernel shutdown complete.")
 
     # ------------------------------------------------------------------ #
@@ -165,8 +153,8 @@ class Kernel:
     # ------------------------------------------------------------------ #
 
     def submit(self, task: Task) -> None:
-        """Enqueue *task* and publish ``TASK_CREATED``."""
-        self._ctx.task_queue.add_task(task)
+        """Add *task* to the graph and publish ``TASK_CREATED``."""
+        self._ctx.graph.add_task(task)
         self._ctx.event_bus.publish(
             Event(
                 type=EventType.TASK_CREATED,
@@ -188,22 +176,20 @@ class Kernel:
             n = self._tick_count
         return self._tick.run_once(n)
 
-    def run_until_idle(self) -> List[AgentResult]:
+    def run_until_idle(self) -> List[ExecutionOutcome]:
         """
-        Tick until the task queue is fully drained, returning all results.
+        Tick until the graph is fully drained, returning all outcomes.
 
-        Terminates even if a wave makes no progress (e.g. tasks with no capable
-        worker), so it never spins.
+        Terminates even if a tick makes no progress (e.g. ready tasks with no
+        capable worker), so it never spins.
         """
-        results: List[AgentResult] = []
-        while not self._ctx.task_queue.is_empty():
-            before = len(self._ctx.task_queue.pending_tasks())
+        outcomes: List[ExecutionOutcome] = []
+        while self._ctx.graph.has_active_work():
             result = self.tick()
-            results.extend(result.results)
-            # No-progress guard: nothing dispatched and pending didn't shrink.
-            if result.dispatched == 0 and len(self._ctx.task_queue.pending_tasks()) >= before:
-                break
-        return results
+            outcomes.extend(result.results)
+            if result.dispatched == 0 and self._ctx.scheduler.inflight_count() == 0:
+                break  # no placeable work and nothing outstanding
+        return outcomes
 
     #: Backwards-compatible alias for :meth:`run_until_idle`.
     run_until_empty = run_until_idle
@@ -226,17 +212,19 @@ class Kernel:
 
     def health(self) -> dict:
         """Return a snapshot of runtime health for monitoring."""
-        agents = self._ctx.registry.list_agents()
-        by_status = Counter(r.status.value for r in agents)
+        workers = self._ctx.worker_runtime.all_workers()
+        by_state = Counter(h.state.value for h in workers)
         return {
             "state": self.state.value,
             "tick_count": self._tick_count,
-            "pending": len(self._ctx.task_queue.pending_tasks()),
+            "pending": len(self._ctx.graph.pending_tasks()),
+            "inflight": self._ctx.scheduler.inflight_count(),
             "workers": {
-                "total": len(agents),
-                "idle": by_status.get("idle", 0),
-                "busy": by_status.get("busy", 0),
-                "offline": by_status.get("offline", 0),
+                "total": len(workers),
+                "idle": by_state.get("idle", 0),
+                "busy": by_state.get("busy", 0),
+                "failed": by_state.get("failed", 0),
+                "offline": by_state.get("offline", 0),
             },
         }
 
@@ -261,20 +249,31 @@ class Kernel:
         return self._ctx.event_bus
 
     @property
-    def registry(self):
-        return self._ctx.registry
+    def graph(self):
+        return self._ctx.graph
+
+    @property
+    def runtime(self):
+        return self._ctx.worker_runtime
 
     @property
     def store(self):
         return self._ctx.result_store
 
     @property
-    def task_queue(self):
-        return self._ctx.task_queue
+    def task_queue(self) -> GraphTaskQueue:
+        """
+        The graph exposed through the ``AbstractTaskQueue`` port — the seeding
+        surface the PlanningService and legacy callers already speak.
+        """
+        if self._task_queue_adapter is None:
+            self._task_queue_adapter = GraphTaskQueue(self._ctx.graph)
+        return self._task_queue_adapter
 
     def __repr__(self) -> str:
         return (
-            f"Kernel(state={self.state.value}, agents={len(self._agents)}, "
+            f"Kernel(state={self.state.value}, "
+            f"workers={len(self._ctx.worker_runtime.all_workers())}, "
             f"ticks={self._tick_count})"
         )
 

@@ -1,9 +1,10 @@
 """
-Integration test — Task Graph drives the live runtime.
+Integration test — Task Graph drives the live Kernel runtime (v0.7).
 
-Proves the boundary: the Dispatcher/Kernel execute a DAG through the
-GraphTaskQueue adapter, pulling only ``ready_tasks()`` and unlocking dependents
-on completion — the Scheduler never reasons about dependencies.
+Proves the boundary: the Kernel's unified scheduler pulls only ``ready_tasks()``
+and unlocks dependents on completion — dependency reasoning never leaves the
+graph, and unplaceable work is left READY (never mis-routed or spuriously
+failed).
 """
 from __future__ import annotations
 
@@ -17,7 +18,6 @@ from planning import TemplatePlanner
 from planning.models import Goal
 from task_graph import (
     EventBusGraphObserver,
-    GraphTaskQueue,
     InMemoryTaskGraph,
     PlanGraphBuilder,
 )
@@ -25,7 +25,7 @@ from task_graph.state import NodeState
 
 
 def _kernel_with_graph(graph):
-    context = KernelContext.in_memory(task_queue=GraphTaskQueue(graph))
+    context = KernelContext.in_memory(graph=graph)
     kernel = Kernel(context).boot()
     for agent in (ResearchAgent(), CodingAgent(), TestingAgent(), DocumentationAgent()):
         kernel.register_agent(agent)
@@ -45,6 +45,7 @@ class TestGraphDrivenExecution:
         assert all(r.success for r in results)
         assert len(graph.completed_tasks()) == 5
         assert graph.has_active_work() is False
+        kernel.shutdown()
 
     def test_graph_publishes_ready_events_via_observer(self):
         plan = TemplatePlanner().plan(Goal(description="Analyze data"))
@@ -60,20 +61,24 @@ class TestGraphDrivenExecution:
         # 5 linear steps → each becomes ready exactly once.
         assert len(ready_events) == 5
         assert all(e.source == "TaskGraph" for e in ready_events)
+        kernel.shutdown()
 
-    def test_failed_dependency_blocks_downstream(self):
-        # A node whose capability no worker satisfies fails; its dependents
-        # must never run.
+    def test_no_capable_worker_leaves_work_ready_not_failed(self):
+        # A kernel with NO workers cannot place anything: the ready source task
+        # must remain READY (available for a future worker), downstream stays
+        # BLOCKED, and nothing is spuriously failed.
         plan = TemplatePlanner().plan(Goal(description="x"))
         graph = PlanGraphBuilder().build(plan)
 
-        # Kernel with NO workers → the first ready task can't be matched and fails.
-        context = KernelContext.in_memory(task_queue=GraphTaskQueue(graph))
+        context = KernelContext.in_memory(graph=graph)
         kernel = Kernel(context).boot()
 
-        kernel.run_until_idle()
+        results = kernel.run_until_idle()
 
-        # First node failed; everything downstream stayed blocked (never ran).
-        assert len(graph.failed_tasks()) == 1
+        assert results == []
+        assert len(graph.completed_tasks()) == 0
+        assert len(graph.failed_tasks()) == 0
+        ready = [n for n in graph.nodes() if n.state == NodeState.READY]
         blocked = [n for n in graph.nodes() if n.state == NodeState.BLOCKED]
-        assert len(blocked) == 4
+        assert len(ready) == 1 and len(blocked) == 4
+        kernel.shutdown()

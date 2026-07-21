@@ -26,3 +26,4 @@ we remember *why* AgentOS is shaped the way it is — not just *what* the code d
 | [0008](0008-program-to-abstractions.md) | Program to abstractions (interface per swappable module) | Accepted |
 | [0009](0009-kernel-runtime.md) | Kernel runtime — context, dispatcher, lifecycle, tick | Accepted |
 | [0010](0010-execution-id-per-attempt.md) | Execution id per attempt | Accepted |
+| [0011](0011-unified-scheduler-dispatch-backends.md) | Unified scheduler with dispatch backends | Accepted |

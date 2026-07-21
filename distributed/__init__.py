@@ -34,6 +34,7 @@ from distributed.messages import (
     StatusMessage,
     TaskMessage,
 )
+from distributed.redis_transport import RedisTransport
 from distributed.remote_worker import RemoteWorkerNode
 from distributed.scheduler import DistributedScheduler
 from distributed.transport import Channels, InMemoryTransport, Transport
@@ -54,6 +55,7 @@ __all__ = [
     # transport
     "Transport",
     "InMemoryTransport",
+    "RedisTransport",
     "Channels",
     # discovery
     "WorkerDirectory",

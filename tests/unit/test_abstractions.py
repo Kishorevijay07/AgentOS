@@ -4,7 +4,7 @@ Unit tests for the program-to-abstractions seam (ADR-0008).
 Verifies that every swappable subsystem is interface-backed:
   * each concrete is a subclass of its abstraction,
   * each abstraction is a genuine ABC (cannot be instantiated directly),
-  * the Scheduler and Dispatcher accept the abstractions (Dependency Inversion).
+  * the KernelContext and unified scheduler accept abstractions (DIP).
 """
 from __future__ import annotations
 
@@ -12,10 +12,12 @@ import pytest
 
 from agents.registry import AbstractAgentRegistry, AgentRegistry
 from kernel.context import KernelContext
-from kernel.dispatcher import Dispatcher
 from result_store import AbstractResultStore, ResultStore
 from result_store.store import AbstractResultStore as AbstractResultStoreDirect
+from runtime import AbstractWorkerRuntime, DefaultWorkerRuntime
 from scheduler.scheduler import Scheduler
+from scheduling import DispatchBackend, ExecutionScheduler, LocalDispatchBackend
+from task_graph import AbstractTaskGraph, InMemoryTaskGraph
 from task_queue import (
     AbstractResultQueue,
     AbstractTaskQueue,
@@ -29,6 +31,8 @@ ABSTRACTION_PAIRS = [
     (AbstractTaskQueue, TaskQueue),
     (AbstractResultQueue, ResultQueue),
     (AbstractResultStore, ResultStore),
+    (AbstractTaskGraph, InMemoryTaskGraph),
+    (AbstractWorkerRuntime, DefaultWorkerRuntime),
 ]
 
 
@@ -51,33 +55,30 @@ class TestConcretesImplementAbstractions:
         assert AbstractResultStore is AbstractResultStoreDirect
 
 
-class TestOrchestratorsAcceptAbstractions:
-    def test_scheduler_accepts_registry_abstraction(self):
-        registry: AbstractAgentRegistry = AgentRegistry()
-        scheduler = Scheduler(registry=registry)
-        assert isinstance(scheduler, Scheduler)
-
-    def test_dispatcher_accepts_abstraction_backed_context(self):
-        # KernelContext holds every collaborator as its abstraction; the
-        # Dispatcher depends only on the context.
+class TestKernelContextV2:
+    def test_context_fields_are_abstraction_typed(self):
         context = KernelContext.in_memory(
-            task_queue=TaskQueue(),
-            result_queue=ResultQueue(),
+            graph=InMemoryTaskGraph(),
             result_store=ResultStore(),
-            registry=AgentRegistry(),
         )
-        dispatcher = Dispatcher(context)
-        assert isinstance(dispatcher, Dispatcher)
-        assert isinstance(context.task_queue, AbstractTaskQueue)
-        assert isinstance(context.result_queue, AbstractResultQueue)
+        assert isinstance(context.graph, AbstractTaskGraph)
+        assert isinstance(context.worker_runtime, AbstractWorkerRuntime)
         assert isinstance(context.result_store, AbstractResultStore)
-        assert isinstance(context.registry, AbstractAgentRegistry)
+        assert isinstance(context.scheduler, ExecutionScheduler)
+        context.worker_runtime.shutdown()
+
+    def test_empty_injected_graph_is_not_discarded(self):
+        """Regression: empty containers are falsy — `or` wiring loses them."""
+        graph = InMemoryTaskGraph()
+        context = KernelContext.in_memory(graph=graph)
+        assert context.graph is graph
+        context.worker_runtime.shutdown()
 
 
 class TestSwapSeam:
     """A fake implementation of an abstraction must be injectable unchanged."""
 
-    def test_fake_registry_satisfies_scheduler(self):
+    def test_fake_registry_satisfies_legacy_scheduler(self):
         class FakeRegistry(AbstractAgentRegistry):
             def register(self, agent): return "fake-1"
             def remove(self, agent_id): ...
@@ -91,8 +92,24 @@ class TestSwapSeam:
             def available_agents(self): return []
             def mark_offline(self, agent_id): ...
 
-        # No capable agents → dispatch returns None, but the seam works.
         from models.task import Task
 
         scheduler = Scheduler(registry=FakeRegistry())
         assert scheduler.dispatch(Task(description="x")) is None
+
+    def test_fake_dispatch_backend_satisfies_unified_scheduler(self):
+        """The v0.7 seam: any DispatchBackend drops into ExecutionScheduler."""
+
+        class NullBackend(DispatchBackend):
+            def candidates(self): return []
+            def dispatch(self, task, worker_id, *, execution_id=None, timeout=None): ...
+
+        scheduler = ExecutionScheduler(InMemoryTaskGraph(), backend=NullBackend())
+        assert scheduler.schedule_wave() == 0  # no candidates → nothing placed
+
+    def test_local_backend_wraps_runtime(self):
+        runtime = DefaultWorkerRuntime()
+        backend = LocalDispatchBackend(runtime)
+        assert isinstance(backend, DispatchBackend)
+        assert backend.candidates() == []
+        runtime.shutdown()

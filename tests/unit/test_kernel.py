@@ -17,8 +17,9 @@ from config.settings import KernelSettings
 from events.bus import InMemoryEventBus
 from events.event_type import EventType
 from kernel import Kernel, KernelContext, KernelState, build_kernel
-from models.enums import AgentStatus, Priority
+from models.enums import Priority
 from models.task import Task
+from runtime.lifecycle import WorkerState as RuntimeWorkerState
 
 
 class _CountingAgent(WorkerMixin, BaseAgent):
@@ -44,7 +45,7 @@ class TestKernelWiring:
 
     def test_register_agent_brings_it_online(self, kernel):
         agent_id = kernel.register_agent(CodingAgent())
-        assert kernel.registry.get_status(agent_id) == AgentStatus.IDLE
+        assert kernel.runtime.get_worker(agent_id).state == RuntimeWorkerState.IDLE
         online = [e for e in kernel.bus.history() if e.type == EventType.AGENT_ONLINE]
         assert any(e.payload["agent_id"] == agent_id for e in online)
 
@@ -61,7 +62,7 @@ class TestKernelExecution:
         assert results[0].success is True
 
         # Agent released back to IDLE after execution.
-        assert kernel.registry.get_status(agent_id) == AgentStatus.IDLE
+        assert kernel.runtime.get_worker(agent_id).state == RuntimeWorkerState.IDLE
 
         # TASK_CREATED (Kernel) and TASK_ASSIGNED (Scheduler) both fired.
         types = [e.type for e in kernel.bus.history()]

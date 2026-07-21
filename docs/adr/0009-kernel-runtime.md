@@ -1,6 +1,6 @@
 # ADR-0009: Kernel runtime — context, dispatcher, lifecycle, tick
 
-- **Status:** Accepted
+- **Status:** Accepted (the `Dispatcher` portion is superseded by [ADR-0011](0011-unified-scheduler-dispatch-backends.md))
 - **Date:** 2026-07-11
 - **Supersedes:** the `Supervisor` role from [ADR-0001](0001-layered-architecture-and-kernel-composition-root.md)
 

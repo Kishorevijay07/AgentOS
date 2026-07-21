@@ -24,7 +24,11 @@ nowhere else.
 | `agents/` | Define what a worker *is* and its lifecycle; keep a live directory of them. | `BaseAgent`, `WorkerMixin`/`WorkerState`, `AbstractAgentRegistry`/`AgentRegistry`, concrete agents |
 | `scheduler/` | Match a task's required capabilities to the best idle worker. Knows nothing about concrete agent classes. | `Scheduler` |
 | `result_store/` | Canonical, queryable trace of every execution — one record per attempt (timing, logs, artifacts). | `AbstractResultStore`/`ResultStore`, `ExecutionRecord`, `LogEntry`, `Artifact` |
-| `kernel/` | The runtime heartbeat + composition root: lifecycle, tick loop, dispatch, DI. The one place implementations are chosen and injected. | `Kernel`, `KernelContext`, `Dispatcher`, `Lifecycle`/`KernelState`, `Tick`/`TickResult`, `build_kernel` |
+| `kernel/` | The runtime heartbeat + composition root: lifecycle, tick loop, DI. The one place implementations are chosen and injected. Drives the unified scheduler (ADR-0011). | `Kernel`, `KernelContext`, `Lifecycle`/`KernelState`, `Tick`/`TickResult`, `build_kernel` |
+| `scheduling/` | **The** scheduler: one placement/reconciliation loop over a pluggable dispatch backend (local call ↔ transport message). | `ExecutionScheduler`, `DispatchBackend`, `LocalDispatchBackend`, `TransportDispatchBackend`, `CapabilityMatcher`, `RetryPolicy` |
+| `runtime/` | Worker pool as a resource: lifecycle, timeouts, isolation, metrics, health. | `AbstractWorkerRuntime`/`DefaultWorkerRuntime`, `Worker`, `WorkerHandle`, `TaskExecutor` |
+| `task_graph/` | Executable DAG: readiness, cycle detection, dependent unlocking. | `AbstractTaskGraph`/`InMemoryTaskGraph`, `TaskNode`, `PlanGraphBuilder`, `GraphTaskQueue` |
+| `distributed/` | Messages-only coordination across machines: typed protocol, pluggable transport, discovery, heartbeats, remote nodes. | `Transport`/`InMemoryTransport`/`RedisTransport`, `WorkerDirectory`, `RemoteWorkerNode`, `DistributedScheduler` |
 | `config/` | Tunable settings, validated. | `KernelSettings` |
 
 Each module has exactly one reason to change. The Scheduler changes only when
@@ -39,10 +43,14 @@ Event Bus only when messaging semantics change.
 agentos/
 ├── kernel/                  # Runtime heartbeat + composition root
 │   ├── kernel.py            #   Kernel — lifecycle owner, tick loop, threaded run(), facade
-│   ├── context.py           #   KernelContext — shared-services DI container
-│   ├── dispatcher.py        #   Dispatcher — assign, execute, trace, handle failure
+│   ├── context.py           #   KernelContext — graph + worker runtime + scheduler (DI container)
 │   ├── lifecycle.py         #   KernelState + Lifecycle transition guard
-│   └── tick.py              #   Tick / TickResult (dispatch wave, collect, heartbeat)
+│   └── tick.py              #   Tick / TickResult (scheduler wave, collect, health)
+├── scheduling/              # THE scheduler (one loop, pluggable backends — ADR-0011)
+│   ├── scheduler.py         #   ExecutionScheduler — placement + reconciliation
+│   ├── backend.py           #   DispatchBackend + Local/Transport implementations
+│   ├── capability.py        #   CapabilityMatcher (+ HasCapabilities protocol)
+│   └── retry.py             #   RetryPolicy strategies
 ├── config/
 │   └── settings.py          # KernelSettings (pydantic)
 ├── models/                  # Shared data types (no behaviour)
@@ -76,10 +84,11 @@ agentos/
 
 ## 3. Class diagram
 
-Dependency edges point at **abstractions** — the Scheduler, Dispatcher, and
-Kernel never reference a concrete queue/registry/store/bus. The Kernel holds a
-`KernelContext` (the DI container) and drives a `Tick`/`Dispatcher` through the
-`Lifecycle`.
+Dependency edges point at **abstractions** — the scheduler and Kernel never
+reference a concrete graph/runtime/store/bus. The Kernel holds a
+`KernelContext` (the DI container) and drives `Tick`s through the `Lifecycle`;
+each tick is one `ExecutionScheduler` wave over a pluggable `DispatchBackend`
+(ADR-0011).
 
 ```mermaid
 classDiagram
@@ -150,14 +159,31 @@ classDiagram
     }
     class ResultStore
 
-    class Scheduler {
-        +dispatch(task) AgentRecord
-        +release(agent_id)
+    class ExecutionScheduler {
+        +schedule_wave() int
+        +drain_outcomes() list~ExecutionOutcome~
+        +run_until_idle()
+        +reap_lost_tasks() list
     }
-    class Dispatcher {
-        +dispatch_next() bool
-        +dispatch_available() int
-        +collect_results() list~AgentResult~
+    class DispatchBackend {
+        <<abstract>>
+        +candidates() list
+        +dispatch(task, worker_id, ...)
+        +lost_tasks(inflight) list
+    }
+    class LocalDispatchBackend
+    class TransportDispatchBackend
+
+    class AbstractTaskGraph {
+        <<abstract>>
+        +ready_tasks() list~TaskNode~
+        +mark_running / mark_completed / mark_failed
+    }
+    class AbstractWorkerRuntime {
+        <<abstract>>
+        +register_worker(worker) str
+        +execute_task(worker_id, task) ExecutionOutcome
+        +available_workers() / health_check()
     }
 
     class BaseAgent {
@@ -168,32 +194,30 @@ classDiagram
         +pause() / resume() / shutdown()
     }
     class WorkerMixin
-    class AgentRecord
 
     InMemoryEventBus ..|> AbstractEventBus
-    AgentRegistry ..|> AbstractAgentRegistry
     TaskQueue ..|> AbstractTaskQueue
     ResultQueue ..|> AbstractResultQueue
     ResultStore ..|> AbstractResultStore
+    LocalDispatchBackend ..|> DispatchBackend
+    TransportDispatchBackend ..|> DispatchBackend
 
     KernelContext o-- AbstractEventBus
-    KernelContext o-- AbstractAgentRegistry
-    KernelContext o-- AbstractTaskQueue
-    KernelContext o-- AbstractResultQueue
+    KernelContext o-- AbstractTaskGraph
+    KernelContext o-- AbstractWorkerRuntime
     KernelContext o-- AbstractResultStore
-    KernelContext o-- Scheduler
+    KernelContext o-- ExecutionScheduler
 
     Kernel o-- KernelContext
     Kernel o-- Lifecycle
     Kernel o-- Tick
-    Tick o-- Dispatcher
-    Dispatcher --> KernelContext
 
-    Scheduler --> AbstractAgentRegistry
-    Scheduler --> AbstractEventBus
+    ExecutionScheduler --> AbstractTaskGraph
+    ExecutionScheduler o-- DispatchBackend
+    LocalDispatchBackend --> AbstractWorkerRuntime
+    TransportDispatchBackend --> WorkerDirectory
+    TransportDispatchBackend --> Transport
 
-    AgentRegistry --> AgentRecord
-    AgentRecord --> BaseAgent
     WorkerMixin ..|> BaseAgent
 ```
 
@@ -222,49 +246,50 @@ sequenceDiagram
     actor Client
     participant K as Kernel
     participant Tk as Tick
-    participant Dsp as Dispatcher
-    participant TQ as AbstractTaskQueue
-    participant Sch as Scheduler
-    participant Reg as AbstractAgentRegistry
-    participant Ag as Agent (Worker)
+    participant Sch as ExecutionScheduler
+    participant TG as AbstractTaskGraph
+    participant BE as DispatchBackend
+    participant WR as WorkerRuntime / Transport
+    participant Ag as Worker
     participant RS as AbstractResultStore
-    participant RQ as AbstractResultQueue
     participant Bus as AbstractEventBus
 
     Client->>K: submit(task)
-    K->>TQ: add_task(task)
+    K->>TG: add_task(task)
     K->>Bus: publish(TASK_CREATED)
 
     Client->>K: tick()   %% or the threaded run() loop
     K->>Tk: run_once(n)
-    Tk->>Dsp: dispatch_available()  %% one wave
-    Dsp->>TQ: get_next_task()
-    TQ-->>Dsp: task (IN_PROGRESS)
-    Dsp->>Sch: dispatch(task)
-    Sch->>Reg: list_agents() / filter IDLE + capabilities
-    Sch->>Reg: set_current_task(agent_id, task.id)  %% agent → BUSY
-    Sch->>Bus: publish(TASK_ASSIGNED)
-    Sch-->>Dsp: AgentRecord
+    Tk->>Sch: schedule_wave()
+    Sch->>TG: ready_tasks()
+    Sch->>BE: candidates()  %% capability view of free workers
+    Sch->>TG: mark_running(task.id, worker_id)
+    Sch->>RS: start_execution(task.id, worker_id)  %% new execution_id
+    Sch->>Bus: publish(TASK_ASSIGNED + TASK_STARTED)
+    Sch->>BE: dispatch(task, worker_id)  %% fire-and-forget
 
-    Dsp->>RS: start_execution(task.id, agent_id)  %% new execution_id
-    Dsp->>Bus: publish(TASK_STARTED)
-    Dsp->>Ag: execute(task)
-    Ag-->>Dsp: output (or raises)
-    Dsp->>RS: finish_execution(task.id, output, success)
-    Dsp->>Bus: publish(TASK_COMPLETED / TASK_FAILED)
-    Dsp->>Sch: release(agent_id)  %% agent → IDLE
-    Dsp->>RQ: push(AgentResult)
-    Dsp->>TQ: complete_task(task.id) / fail_task(task.id)
+    BE->>WR: local call — or TaskMessage over the transport
+    WR->>Ag: execute(task)  %% timeout, isolation, metrics
+    Ag-->>WR: output (or raises)
+    WR-->>BE: ExecutionOutcome  %% immediately, or later as ResultMessage
+    BE-->>Sch: outcome handler
 
-    Tk->>Reg: heartbeat aging (mark stale workers OFFLINE)
+    Sch->>RS: finish_execution(...)
+    Sch->>TG: mark_completed / mark_failed (+ retry policy)
+    Sch->>Bus: publish(TASK_COMPLETED / TASK_FAILED)
+
+    Tk->>Sch: drain_outcomes()
+    Tk->>WR: health_check()  %% unresponsive workers → FAILED
     Tk-->>K: TickResult
 ```
 
-**Error path.** `Dispatcher._execute` wraps `agent.execute` in try/except: an
-unhandled exception becomes a failed `AgentResult` + `ERROR` log +
-`finish_execution(success=False)` + `TaskQueue.fail_task` — the loop never
-crashes on a bad worker. A failed task can be re-queued via
-`TaskQueue.retry_task`, which increments `retry_count`.
+**Error path.** The worker runtime wraps `execute` in try/except with a
+timeout: a crash or timeout becomes a failed `ExecutionOutcome`, never a crashed
+loop. The scheduler reconciles it — `ERROR` log, `finish_execution(success=False)`,
+`graph.mark_failed` — and the `RetryPolicy` decides whether to re-ready the task
+(`retry_count` increments per attempt, each with its own `execution_id`). A
+worker lost mid-flight (distributed) is detected via `lost_tasks()` and its task
+failed/retried the same way.
 
 ---
 
@@ -276,20 +301,20 @@ crashes on a bad worker. A failed task can be re-queued via
   emit an `Event` and walk away; subscribers react. This is what lets a
   monitoring dashboard, a logger, and a metrics sink all observe the runtime
   without the Scheduler knowing they exist.
-- **`task_queue/` exists** to separate *what work is pending* from *who runs it*.
-  The two-queue split (tasks in, results out) is the seam that makes workers and
-  the Dispatcher horizontally scalable — they share only the queues.
+- **`task_graph/` exists** to be the single authority on *readiness*: the
+  scheduler only ever asks "what's ready?", and dependency reasoning (cycles,
+  unlocking) never leaks out of the graph.
+- **`runtime/` exists** to manage workers as a resource — lifecycle, timeouts,
+  crash isolation, metrics — so no other component ever touches a worker object.
+- **`scheduling/` exists** to hold placement *policy* in one place: capability
+  matching, retries, and reconciliation, over a `DispatchBackend` that decides
+  only *how* work travels (local call ↔ transport message). One loop serves the
+  single-process kernel and the distributed cluster (ADR-0011).
 - **`agents/` exists** to define the worker contract (`BaseAgent`) and lifecycle
-  (`WorkerMixin`) once, and to keep a live directory (`AgentRegistry`) so
-  call-sites ask "who can do X?" instead of hard-coding classes.
-- **`scheduler/` exists** to hold matching *policy* in one place. It depends only
-  on capabilities and registry status — never on concrete agent types — so
-  policy can evolve (weighted, cost-aware, locality-aware) without touching
-  agents.
-- **`kernel/dispatcher.py` exists** to own execution and nothing else. It
-  orchestrates queue → scheduler → agent → store and publishes the task
-  lifecycle, but implements no domain logic itself. (It is the evolution of the
-  former `Supervisor`.)
+  (`WorkerMixin`) once; any object with that shape is schedulable.
+- **`task_queue/` exists** as the queue-shaped seeding surface (the
+  `GraphTaskQueue` adapter lets queue-speaking callers, like the
+  PlanningService, feed the graph).
 - **`result_store/` exists** to answer "what happened when task X ran?" with a
   full, queryable record — one per attempt (`execution_id`) — distinct from
   `task.result`, which is just a summary.
@@ -304,12 +329,12 @@ crashes on a bad worker. A failed task can be re-queued via
 | Pattern | Where | Why |
 |---|---|---|
 | **Composition Root + Facade** | `Kernel` / `KernelContext` | One place chooses/injects concretes; a small stable surface hides the graph. |
-| **Dependency Injection (container)** | `KernelContext`, `Scheduler`, `Dispatcher` | Collaborators passed in as abstractions via one context → testable, swappable. |
+| **Dependency Injection (container)** | `KernelContext`, `ExecutionScheduler` | Collaborators passed in as abstractions via one context → testable, swappable. |
 | **State Machine (runtime)** | `KernelState` + `Lifecycle` | Guards the BOOTING→…→STOPPED runtime lifecycle. |
 | **Discrete tick loop** | `Tick` / `TickResult` | Replaces `while True` with inspectable, single-steppable iterations. |
-| **Strategy** | `Scheduler.dispatch` | Capability-matching is an interchangeable policy behind a stable call. |
-| **Publish/Subscribe (Observer)** | `events/` | Loose coupling between producers and reactors. |
-| **Registry** | `AgentRegistry` | Central lookup of live workers by id/capability/status. |
+| **Strategy ×3** | `DispatchBackend`, `CapabilityMatcher`, `RetryPolicy` | How work travels, where it lands, and how failure is handled are each swappable independently. |
+| **Publish/Subscribe (Observer)** | `events/`, `distributed/transport` | Loose coupling between producers and reactors, in-process and across machines. |
+| **Registry** | `WorkerDirectory` (+ legacy `AgentRegistry`) | Central lookup of live workers by id/capability/presence. |
 | **Template Method / Mixin** | `WorkerMixin` + `BaseAgent` | Default lifecycle behaviour, overridable per concrete agent. |
 | **State Machine** | `WorkerState` + `_TRANSITIONS` | Guards illegal worker lifecycle transitions. |
 | **Data Transfer Object** | `Event`, `AgentResult`, `ExecutionRecord` | Immutable envelopes crossing module boundaries. |
@@ -324,17 +349,18 @@ with **no consumer change** — only the Kernel construction site changes.
 
 | Abstraction | In-memory today | Distributed tomorrow |
 |---|---|---|
-| `AbstractTaskQueue` | `deque` + `Lock` | Redis list / Redis Streams / Kafka topic for cross-process, at-least-once dispatch |
-| `AbstractResultQueue` | `deque` + `Lock` | Redis list / Kafka topic so workers and the Dispatcher live in different processes |
+| `Transport` | `InMemoryTransport` | **`RedisTransport` (shipped, v0.7)** · Kafka/NATS next — durable, partitioned messaging |
+| `DispatchBackend` | `LocalDispatchBackend` | `TransportDispatchBackend` (shipped) · a container/K8s-job backend later |
+| `AbstractTaskGraph` | dict + `RLock` DAG | Redis/SQL-backed graph for shared, durable, checkpointable state |
+| `AbstractWorkerRuntime` | thread-pool execution | process-pool (hard kill) / remote-fleet runtime over RPC |
 | `AbstractEventBus` | in-process synchronous | Redis Pub/Sub or Kafka for fan-out across nodes and durable event streams |
 | `AbstractResultStore` | dict keyed by `execution_id` | SQL / Redis for durable, queryable, shared traces (one row per attempt) |
-| `AbstractAgentRegistry` | dict + `Lock` | Redis with heartbeat **TTLs** so remote workers self-expire on missed heartbeat |
 
-**Remote / plugin workers.** `BaseAgent` is the plugin contract. A remote worker
-is just a `BaseAgent` whose `execute` forwards to another process/host and whose
-`heartbeat` pings a shared registry. Because the Registry stores an `AgentRecord`
-envelope (id, capabilities, status, current task, last heartbeat) rather than
-assuming in-process objects, remote workers slot in without Scheduler changes.
+**Remote / plugin workers.** Any object with the `Worker` shape is schedulable.
+A remote worker is a `RemoteWorkerNode` (one per process/container/pod) that
+registers over the transport and heartbeats; the coordinator's
+`WorkerDirectory` holds records, never objects, so remote and local workers are
+indistinguishable to the scheduler.
 
 **Runtime control.** The `Kernel` already runs a lifecycle (BOOTING→…→STOPPED)
 and a discrete `tick()` that a threaded `run()` drives. A distributed deployment
@@ -353,19 +379,22 @@ truth: registry and queue state become projections that can be rebuilt by replay
 
 - **`api/` is an empty placeholder** for a future HTTP adapter (submit tasks,
   query traces, stream events) that would depend only on the `Kernel` facade.
-- **Dispatcher uses `get_next_task`** (priority order), not the dependency-aware
-  `get_next_for_agent`. Full dependency-gated dispatch is a policy upgrade
-  contained within the queue + dispatcher.
-- **Heartbeat aging is latent** for in-memory workers (they don't miss
-  heartbeats); it becomes load-bearing once workers are remote.
-- **Intelligence is still stubbed.** `memory/` and `services/` (LLM, MCP) are
-  empty — the runtime executes placeholder agent logic. Plugging real
-  intelligence into the existing worker contract is the next sprint.
+- **Legacy layer pending removal:** `scheduler/scheduler.py` and
+  `agents/registry.py` are superseded by the unified scheduler + worker runtime
+  (ADR-0011) but kept for `WorkerMixin` integration and old tests.
+- **At-most-once delivery:** `InMemoryTransport` and Redis Pub/Sub both drop
+  messages published while a subscriber is down. Durable, at-least-once
+  delivery (with idempotent result handling keyed on `execution_id`) needs
+  Redis Streams or Kafka behind the same `Transport` ABC.
+- **Timeouts are cooperative** (thread-based); a process-pool `TaskExecutor`
+  gives hard kills.
+- **`memory/` is empty** — agent memory/MCP integration is a future sprint.
 
-> **Resolved in Sprint 3:** the task lifecycle events (`TASK_STARTED`,
-> `TASK_COMPLETED`, `TASK_FAILED`) that `EventType` defined are now published by
-> the `Dispatcher`; the `Supervisor` has been superseded by the `Dispatcher`
-> (see [ADR-0009](adr/0009-kernel-runtime.md)).
+> **Resolved so far:** task lifecycle events published end-to-end (Sprint 3);
+> real LLM planning + LLM-backed workers via OpenRouter (v0.6); the
+> `Supervisor` → `Dispatcher` → **unified `ExecutionScheduler` with dispatch
+> backends** consolidation, Kernel on the graph runtime, and the Redis broker
+> swap (v0.7, [ADR-0011](adr/0011-unified-scheduler-dispatch-backends.md)).
 
 ---
 

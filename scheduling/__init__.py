@@ -14,15 +14,28 @@ Quick start
 >>> scheduler.run_until_idle()
 """
 
-from scheduling.capability import CapabilityMatcher, DefaultCapabilityMatcher
+from scheduling.backend import (
+    DispatchBackend,
+    LocalDispatchBackend,
+    TransportDispatchBackend,
+)
+from scheduling.capability import (
+    CapabilityMatcher,
+    DefaultCapabilityMatcher,
+    HasCapabilities,
+)
 from scheduling.retry import MaxAttemptsRetryPolicy, RetryPolicy
 from scheduling.scheduler import AbstractExecutionScheduler, ExecutionScheduler
 
 __all__ = [
     "AbstractExecutionScheduler",
     "ExecutionScheduler",
+    "DispatchBackend",
+    "LocalDispatchBackend",
+    "TransportDispatchBackend",
     "CapabilityMatcher",
     "DefaultCapabilityMatcher",
+    "HasCapabilities",
     "RetryPolicy",
     "MaxAttemptsRetryPolicy",
 ]

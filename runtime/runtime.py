@@ -56,6 +56,9 @@ class AbstractWorkerRuntime(ABC):
     def available_workers(self) -> List[WorkerHandle]: ...
 
     @abstractmethod
+    def all_workers(self) -> List[WorkerHandle]: ...
+
+    @abstractmethod
     def worker_metrics(self, worker_id: str) -> WorkerMetrics: ...
 
     @abstractmethod

@@ -1,8 +1,24 @@
 from __future__ import annotations
 
-from typing import List, Optional, Protocol, Sequence, runtime_checkable
+from typing import List, Optional, Protocol, Sequence, TypeVar, runtime_checkable
 
-from runtime.handle import WorkerHandle
+
+@runtime_checkable
+class HasCapabilities(Protocol):
+    """
+    Anything the matcher can place work on: an id plus capability tags.
+
+    Both the local runtime's ``WorkerHandle`` and the distributed layer's
+    ``RemoteWorkerInfo`` satisfy this structurally — which is exactly what lets
+    one matcher serve both dispatch backends without knowing where a worker
+    lives.
+    """
+
+    worker_id: str
+    capabilities: List[str]
+
+
+C = TypeVar("C", bound=HasCapabilities)
 
 
 @runtime_checkable
@@ -17,10 +33,8 @@ class CapabilityMatcher(Protocol):
     the scheduler.
     """
 
-    def match(
-        self, required: Sequence[str], candidates: Sequence[WorkerHandle]
-    ) -> Optional[WorkerHandle]:
-        """Return the best worker for *required*, or ``None``."""
+    def match(self, required: Sequence[str], candidates: Sequence[C]) -> Optional[C]:
+        """Return the best candidate for *required*, or ``None``."""
         ...
 
 
@@ -38,9 +52,7 @@ class DefaultCapabilityMatcher:
     extracted here as an injectable strategy.
     """
 
-    def match(
-        self, required: Sequence[str], candidates: Sequence[WorkerHandle]
-    ) -> Optional[WorkerHandle]:
+    def match(self, required: Sequence[str], candidates: Sequence[C]) -> Optional[C]:
         if not candidates:
             return None
         req = set(required)
@@ -48,9 +60,7 @@ class DefaultCapabilityMatcher:
             # No requirement → any worker; prefer the most specialised.
             return min(candidates, key=lambda h: len(h.capabilities))
 
-        full: List[WorkerHandle] = [
-            h for h in candidates if req.issubset(set(h.capabilities))
-        ]
+        full = [h for h in candidates if req.issubset(set(h.capabilities))]
         if full:
             return min(full, key=lambda h: len(h.capabilities))
 

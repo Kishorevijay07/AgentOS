@@ -3,8 +3,11 @@ kernel — the AgentOS composition root and runtime heartbeat.
 
 The Kernel coordinates; it is deliberately unintelligent. It owns the object
 graph (via :class:`KernelContext`), runs the lifecycle, and turns the loop as
-discrete ticks. Concrete implementations are chosen only inside the context, so
-swapping to Redis/Kafka/distributed backends touches this package alone.
+discrete ticks. Since v0.7 it drives the unified graph runtime: the task-graph
+DAG holds the work, the worker runtime holds the workers, and one
+``ExecutionScheduler`` (with a pluggable dispatch backend) connects them —
+see ADR-0011. Concrete implementations are chosen only inside the context, so
+swapping to distributed backends touches this package alone.
 
 Quick start
 -----------
@@ -20,7 +23,6 @@ Quick start
 """
 
 from kernel.context import KernelContext
-from kernel.dispatcher import Dispatcher
 from kernel.kernel import Kernel, build_kernel
 from kernel.lifecycle import KernelState, Lifecycle
 from kernel.tick import Tick, TickResult
@@ -29,7 +31,6 @@ __all__ = [
     "Kernel",
     "build_kernel",
     "KernelContext",
-    "Dispatcher",
     "KernelState",
     "Lifecycle",
     "Tick",

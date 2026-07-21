@@ -1,44 +1,52 @@
-"""Unit tests for the Tick iteration and heartbeat aging (ADR-0009)."""
+"""Unit tests for the Tick iteration on the v0.7 graph runtime (ADR-0011)."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, List
 
 import pytest
 
-from agents.base import BaseAgent
-from agents.worker import WorkerMixin
 from kernel.context import KernelContext
-from kernel.dispatcher import Dispatcher
 from kernel.tick import Tick, TickResult
-from models.enums import AgentStatus
 from models.task import Task
+from runtime.lifecycle import WorkerState
 
 
-class _Agent(WorkerMixin, BaseAgent):
+class _Agent:
     capabilities: List[str] = ["code"]
 
+    def initialize(self) -> None: ...
     def execute(self, task: Task) -> Any:
         return f"done: {task.description}"
+    def heartbeat(self) -> datetime:
+        return datetime.now(timezone.utc)
+    def pause(self) -> None: ...
+    def resume(self) -> None: ...
+    def shutdown(self) -> None: ...
 
 
-def _wire(context: KernelContext, agent: BaseAgent) -> str:
-    agent_id = context.registry.register(agent)
-    agent._configure_worker(
-        registry=context.registry, bus=context.event_bus, agent_id=agent_id
-    )
-    agent.initialize()
-    return agent_id
+class _SickAgent(_Agent):
+    """Healthy at registration, then stops answering heartbeats."""
+
+    def __init__(self) -> None:
+        self.sick = False
+
+    def heartbeat(self) -> datetime:
+        if self.sick:
+            raise RuntimeError("no pulse")
+        return datetime.now(timezone.utc)
 
 
 @pytest.fixture()
 def context() -> KernelContext:
-    return KernelContext.in_memory()
+    ctx = KernelContext.in_memory()
+    yield ctx
+    ctx.worker_runtime.shutdown()
 
 
 @pytest.fixture()
 def tick(context) -> Tick:
-    return Tick(context, Dispatcher(context))
+    return Tick(context)
 
 
 class TestTickDispatch:
@@ -49,39 +57,37 @@ class TestTickDispatch:
         assert result.results == []
 
     def test_tick_dispatches_a_wave(self, context, tick):
-        _wire(context, _Agent())
+        context.worker_runtime.register_worker(_Agent())
         for i in range(3):
-            context.task_queue.add_task(
+            context.graph.add_task(
                 Task(description=f"t{i}", required_capabilities=["code"])
             )
 
         result = tick.run_once(1)
 
+        # Local backend frees the worker synchronously, so one tick drains all
+        # three independent ready tasks.
         assert result.dispatched == 3
         assert len(result.results) == 3
+        assert all(r.success for r in result.results)
         assert result.pending_after == 0
         assert result.active_workers == 1
 
 
-class TestHeartbeatAging:
-    def test_stale_worker_marked_offline(self, context, tick):
-        agent_id = _wire(context, _Agent())
-
-        # Back-date the heartbeat well past the offline threshold.
-        record = next(
-            r for r in context.registry.list_agents() if r.agent_id == agent_id
-        )
-        stale = context.settings.agent_offline_after_seconds + 10
-        record.last_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=stale)
+class TestTickHealth:
+    def test_unresponsive_worker_marked_failed(self, context, tick):
+        agent = _SickAgent()
+        wid = context.worker_runtime.register_worker(agent)
+        agent.sick = True  # falls ill after registration
 
         result = tick.run_once(1)
 
-        assert agent_id in result.aged_out
-        assert context.registry.get_status(agent_id) == AgentStatus.OFFLINE
+        assert wid in result.aged_out
+        assert context.worker_runtime.get_worker(wid).state == WorkerState.FAILED
         assert result.active_workers == 0
 
-    def test_fresh_worker_not_aged_out(self, context, tick):
-        agent_id = _wire(context, _Agent())
+    def test_healthy_worker_survives(self, context, tick):
+        wid = context.worker_runtime.register_worker(_Agent())
         result = tick.run_once(1)
-        assert agent_id not in result.aged_out
-        assert context.registry.get_status(agent_id) == AgentStatus.IDLE
+        assert wid not in result.aged_out
+        assert context.worker_runtime.get_worker(wid).state == WorkerState.IDLE
