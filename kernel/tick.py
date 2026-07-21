@@ -22,6 +22,7 @@ class TickResult:
     dispatched: int
     results: List[ExecutionOutcome] = field(default_factory=list)
     aged_out: List[str] = field(default_factory=list)  # worker_ids marked unhealthy
+    replanned: int = 0  # follow-up tasks reflection injected this tick
     active_workers: int = 0
     pending_after: int = 0
 
@@ -29,7 +30,8 @@ class TickResult:
         return (
             f"TickResult(tick={self.tick}, dispatched={self.dispatched}, "
             f"results={len(self.results)}, aged_out={len(self.aged_out)}, "
-            f"active_workers={self.active_workers}, pending_after={self.pending_after})"
+            f"replanned={self.replanned}, active_workers={self.active_workers}, "
+            f"pending_after={self.pending_after})"
         )
 
 
@@ -37,12 +39,15 @@ class Tick:
     """
     One iteration of the kernel heartbeat — the unit that replaces ``while True``.
 
-    Each tick performs three steps, in order:
+    Each tick performs, in order:
 
     1. **assign** — one scheduler wave: ready tasks placed on capable workers
        (with the local backend a wave executes them synchronously too);
     2. **collect** — drain the outcomes the scheduler reconciled this tick;
-    3. **update workers** — the runtime health pass: probe idle workers and mark
+    3. **reflect** — if a reflection coordinator is wired, judge the completed
+       outcomes and inject any corrective follow-up tasks into the live graph
+       (the autonomous loop); no-op when reflection is disabled;
+    4. **update workers** — the runtime health pass: probe idle workers and mark
        unresponsive ones FAILED.
 
     Thinking in discrete ticks (Tick 1 → Tick 2 → …) rather than an opaque busy
@@ -63,7 +68,12 @@ class Tick:
         # 2. collect — outcomes reconciled since the last drain.
         results = ctx.scheduler.drain_outcomes()
 
-        # 3. update workers — health probe (unresponsive → FAILED).
+        # 3. reflect — judge completed work and replan into the live graph.
+        replanned = 0
+        if ctx.reflection is not None and results:
+            replanned = len(ctx.reflection.process(results))
+
+        # 4. update workers — health probe (unresponsive → FAILED).
         aged_out = ctx.worker_runtime.health_check()
 
         active = sum(
@@ -77,6 +87,7 @@ class Tick:
             dispatched=dispatched,
             results=results,
             aged_out=aged_out,
+            replanned=replanned,
             active_workers=active,
             pending_after=pending,
         )

@@ -219,6 +219,7 @@ class Kernel:
             "tick_count": self._tick_count,
             "pending": len(self._ctx.graph.pending_tasks()),
             "inflight": self._ctx.scheduler.inflight_count(),
+            "replans": self._ctx.reflection.replans_done if self._ctx.reflection else 0,
             "workers": {
                 "total": len(workers),
                 "idle": by_state.get("idle", 0),

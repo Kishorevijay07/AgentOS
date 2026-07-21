@@ -291,6 +291,24 @@ loop. The scheduler reconciles it — `ERROR` log, `finish_execution(success=Fal
 worker lost mid-flight (distributed) is detected via `lost_tasks()` and its task
 failed/retried the same way.
 
+### The autonomous loop (v0.8, opt-in — ADR-0012)
+
+When a `reflection/` coordinator is wired into the context, each tick gains a
+**reflect** step between *collect* and *health*:
+
+```
+… → schedule_wave → drain_outcomes → reflect(outcomes) → health_check → TickResult
+```
+
+For each *successful* outcome, a `Reflector` judges the output. On a `REPLAN`
+verdict the `ReflectionCoordinator` injects the proposed follow-up tasks into the
+**live** graph (`add_task` + `add_dependency` on the reflected task, stamped
+`metadata.origin = "reflection"`). The next wave runs them — so a goal expands
+itself. Two guard-rails bound the loop: a global `max_replans` budget, and a rule
+that reflection-injected tasks are never reflected on again. Reflection is
+fail-open (a bad LLM call → `ACCEPT`) and entirely opt-in (no reflector ⇒ the
+pre-v0.8 one-shot behaviour, unchanged).
+
 ---
 
 ## 5. Why each module exists
@@ -310,6 +328,9 @@ failed/retried the same way.
   matching, retries, and reconciliation, over a `DispatchBackend` that decides
   only *how* work travels (local call ↔ transport message). One loop serves the
   single-process kernel and the distributed cluster (ADR-0011).
+- **`reflection/` exists** to close the loop: judge completed work and inject
+  corrective/follow-up tasks into the live graph (planning's mirror image). All
+  side effects live in one coordinator with hard termination guard-rails.
 - **`agents/` exists** to define the worker contract (`BaseAgent`) and lifecycle
   (`WorkerMixin`) once; any object with that shape is schedulable.
 - **`task_queue/` exists** as the queue-shaped seeding surface (the

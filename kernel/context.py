@@ -6,6 +6,8 @@ from typing import Optional
 
 from config.settings import KernelSettings
 from events.bus import AbstractEventBus, InMemoryEventBus
+from reflection.coordinator import ReflectionCoordinator
+from reflection.reflector import Reflector
 from result_store import AbstractResultStore, ResultStore
 from runtime.runtime import AbstractWorkerRuntime, DefaultWorkerRuntime
 from scheduling.backend import LocalDispatchBackend
@@ -41,6 +43,8 @@ class KernelContext:
     scheduler: ExecutionScheduler
     settings: KernelSettings
     logger: logging.Logger
+    #: Optional autonomous-loop coordinator; None → reflection disabled (default).
+    reflection: Optional[ReflectionCoordinator] = None
 
     @classmethod
     def in_memory(
@@ -53,6 +57,10 @@ class KernelContext:
         result_store: Optional[AbstractResultStore] = None,
         scheduler: Optional[ExecutionScheduler] = None,
         logger: Optional[logging.Logger] = None,
+        reflector: Optional[Reflector] = None,
+        goal: Optional[str] = None,
+        allowed_capabilities: Optional[list[str]] = None,
+        max_replans: int = 5,
     ) -> "KernelContext":
         """
         Build the default in-memory service graph, honouring any override.
@@ -61,6 +69,10 @@ class KernelContext:
         override to swap one subsystem — e.g. a Redis-backed graph or a
         transport-backed scheduler — and every other service stays in-memory
         with no other change.
+
+        Autonomous loop (opt-in): pass a ``reflector`` (plus optional ``goal`` /
+        ``allowed_capabilities`` / ``max_replans``) to enable reflect→replan.
+        Omit it for the default one-shot behaviour.
         """
         # NB: use explicit ``is None`` checks, never ``x or Default()`` — the
         # graph/store define ``__len__``, so an *empty* injected instance is
@@ -87,6 +99,14 @@ class KernelContext:
             )
         if logger is None:
             logger = logging.getLogger("agentos.kernel")
+        reflection = None
+        if reflector is not None:
+            reflection = ReflectionCoordinator(
+                graph, reflector,
+                result_store=result_store, event_bus=event_bus,
+                goal=goal, allowed_capabilities=allowed_capabilities,
+                max_replans=max_replans,
+            )
         return cls(
             event_bus=event_bus,
             graph=graph,
@@ -95,4 +115,5 @@ class KernelContext:
             scheduler=scheduler,
             settings=settings,
             logger=logger,
+            reflection=reflection,
         )

@@ -35,7 +35,11 @@ You: "Build a REST API for a blog"
         │
    [Workers]          → the agents that research / code / test / document
         │
-   → results flow back, dependent tasks unlock, repeat until done
+   [Reflection]       → judges each output; can inject corrective/follow-up
+        │                tasks into the LIVE graph (bounded by a replan budget)
+        │
+   → results flow back, dependent tasks unlock, the goal expands itself
+     as needed, until the work is genuinely done
 ```
 
 The one rule that keeps it clean: **each layer only asks one question of the
@@ -160,7 +164,8 @@ scheduler.run_until_idle()
 | `kernel/` | The core loop. Boots, ticks, pauses, stops — coordinates everything, does nothing "smart" itself. |
 | `planning/` | The architect. Turns a goal into an ordered plan (LLM-backed or template-based), validates it, converts it to tasks. |
 | `task_graph/` | The dependency map. A thread-safe DAG that knows which tasks are ready, detects cycles, unlocks dependents on completion. |
-| `scheduling/` | The foreman. Matches ready tasks to workers **by capability** (never by name), with pluggable retry policies. |
+| `scheduling/` | The foreman. Matches ready tasks to workers **by capability** (never by name) behind a pluggable dispatch backend (local ↔ transport), with retry policies. |
+| `reflection/` | The critic. After a task runs, judges the output and — when it falls short — injects corrective/follow-up tasks into the live graph (the autonomous loop), bounded by a replan budget. |
 | `runtime/` | The site office. Manages the worker pool: lifecycle, timeouts, crash isolation, health checks, metrics. |
 | `distributed/` | The radio system. Typed message protocol, pluggable transport, worker discovery, heartbeats, remote worker nodes. |
 | `events/` | The announcement board. Publish/subscribe event bus — components react without knowing each other. |
@@ -220,7 +225,8 @@ distributed layer running full DAGs across simulated remote workers.
 | v0.5 ✅ | Distributed runtime: transport, discovery, heartbeats, remote workers |
 | v0.6 | **Real intelligence**: OpenRouter `LLMClient` wired into `LLMPlanner` + LLM-backed coding/research workers |
 | v0.7 ✅ | One unified scheduler behind a `DispatchBackend` seam (local ↔ transport) + `RedisTransport` |
-| v0.8 | Checkpointing, reflection, dynamic replanning |
+| v0.8 ✅ | **The autonomous loop**: reflection + dynamic replanning (inject corrective tasks into the live graph, bounded by a replan budget) |
+| v0.9 | Checkpointing & persistence (durable, resumable runs) |
 | v1.0 | HTTP API, Kubernetes deployment, plugin workers |
 
 ## Documentation
