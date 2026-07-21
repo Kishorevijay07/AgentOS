@@ -331,6 +331,10 @@ pre-v0.8 one-shot behaviour, unchanged).
 - **`reflection/` exists** to close the loop: judge completed work and inject
   corrective/follow-up tasks into the live graph (planning's mirror image). All
   side effects live in one coordinator with hard termination guard-rails.
+- **`checkpoint/` exists** to make runs durable: snapshot the graph (which
+  carries per-task execution history) + reflection budget to a pluggable store,
+  so a crash resumes exactly where it left off (interrupted tasks re-run). The
+  atomic file write means a mid-write crash never corrupts the snapshot.
 - **`agents/` exists** to define the worker contract (`BaseAgent`) and lifecycle
   (`WorkerMixin`) once; any object with that shape is schedulable.
 - **`task_queue/` exists** as the queue-shaped seeding surface (the
@@ -415,7 +419,10 @@ truth: registry and queue state become projections that can be rebuilt by replay
 > real LLM planning + LLM-backed workers via OpenRouter (v0.6); the
 > `Supervisor` → `Dispatcher` → **unified `ExecutionScheduler` with dispatch
 > backends** consolidation, Kernel on the graph runtime, and the Redis broker
-> swap (v0.7, [ADR-0011](adr/0011-unified-scheduler-dispatch-backends.md)).
+> swap (v0.7, [ADR-0011](adr/0011-unified-scheduler-dispatch-backends.md)); the
+> **autonomous loop** — reflection + dynamic replanning (v0.8,
+> [ADR-0012](adr/0012-reflection-dynamic-replanning.md)); and **checkpointing +
+> crash-resume** (v0.9, [ADR-0013](adr/0013-checkpointing-and-resume.md)).
 
 ---
 

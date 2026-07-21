@@ -105,6 +105,13 @@ class AbstractTaskGraph(ABC):
     @abstractmethod
     def visualize(self) -> str: ...
 
+    # --- checkpointing --------------------------------------------------
+    @abstractmethod
+    def snapshot(self) -> List[TaskNode]: ...
+
+    @abstractmethod
+    def restore(self, nodes: List[TaskNode]) -> None: ...
+
 
 class InMemoryTaskGraph(AbstractTaskGraph):
     """
@@ -346,6 +353,33 @@ class InMemoryTaskGraph(AbstractTaskGraph):
     def nodes(self) -> List[TaskNode]:
         with self._lock:
             return list(self._nodes.values())
+
+    # ------------------------------------------------------------------ #
+    #  Checkpointing
+    # ------------------------------------------------------------------ #
+
+    def snapshot(self) -> List[TaskNode]:
+        """Return deep copies of every node — a point-in-time, mutation-safe view."""
+        with self._lock:
+            return [n.model_copy(deep=True) for n in self._nodes.values()]
+
+    def restore(self, nodes: List[TaskNode]) -> None:
+        """
+        Replace the graph's contents with *nodes* (from a checkpoint).
+
+        Interrupted work re-runs: any node that was ``RUNNING`` when the snapshot
+        was taken is reset — its in-flight execution did not finish, so it goes
+        back to ``READY`` (or ``BLOCKED`` if a dependency is not yet complete).
+        Terminal and blocked states are preserved as-is.
+        """
+        with self._lock:
+            self._nodes = {n.task_id: n.model_copy(deep=True) for n in nodes}
+            for node in self._nodes.values():
+                if node.state == NodeState.RUNNING:
+                    node.assigned_worker = None
+                    node.state = NodeState.BLOCKED  # re-evaluated just below
+                if node.state == NodeState.BLOCKED and self._deps_complete(node):
+                    node.state = NodeState.READY
 
     def has_active_work(self) -> bool:
         with self._lock:

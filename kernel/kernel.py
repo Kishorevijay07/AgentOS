@@ -174,7 +174,9 @@ class Kernel:
         with self._tick_lock:
             self._tick_count += 1
             n = self._tick_count
-        return self._tick.run_once(n)
+        result = self._tick.run_once(n)
+        self._maybe_autocheckpoint(n)
+        return result
 
     def run_until_idle(self) -> List[ExecutionOutcome]:
         """
@@ -193,6 +195,64 @@ class Kernel:
 
     #: Backwards-compatible alias for :meth:`run_until_idle`.
     run_until_empty = run_until_idle
+
+    # ------------------------------------------------------------------ #
+    #  Checkpointing (v0.9)
+    # ------------------------------------------------------------------ #
+
+    def checkpoint(self) -> "Checkpoint":
+        """Capture a serializable snapshot of the run's execution state."""
+        from checkpoint.models import Checkpoint
+
+        return Checkpoint(
+            tick_count=self._tick_count,
+            replans_done=(self._ctx.reflection.replans_done if self._ctx.reflection else 0),
+            nodes=self._ctx.graph.snapshot(),
+        )
+
+    def save_checkpoint(self, store: "Optional[CheckpointStore]" = None) -> None:
+        """Persist a checkpoint to *store* (or the context's configured store)."""
+        store = store or self._ctx.checkpoint_store
+        if store is None:
+            raise RuntimeError("No checkpoint store configured or provided.")
+        store.save(self.checkpoint())
+
+    def restore(self, checkpoint: "Checkpoint") -> None:
+        """
+        Rebuild the run's execution state from *checkpoint*.
+
+        The graph is repopulated (interrupted RUNNING tasks reset to re-run), the
+        tick counter and reflection budget are restored. Register the same
+        workers before calling this; then :meth:`run_until_idle` continues the run.
+        """
+        self._ctx.graph.restore(checkpoint.nodes)
+        with self._tick_lock:
+            self._tick_count = checkpoint.tick_count
+        if self._ctx.reflection is not None:
+            self._ctx.reflection.restore(checkpoint.replans_done)
+        self._ctx.logger.info("Kernel restored from checkpoint: %s", checkpoint.summary())
+
+    def load_checkpoint(self, store: "Optional[CheckpointStore]" = None) -> bool:
+        """
+        Load and apply the latest checkpoint from *store*. Returns ``True`` if a
+        checkpoint was found and restored, ``False`` if there was none (fresh run).
+        """
+        store = store or self._ctx.checkpoint_store
+        checkpoint = store.load() if store is not None else None
+        if checkpoint is None:
+            return False
+        self.restore(checkpoint)
+        return True
+
+    def _maybe_autocheckpoint(self, tick_number: int) -> None:
+        interval = self._ctx.settings.checkpoint_every_ticks
+        store = self._ctx.checkpoint_store
+        if store is None or interval <= 0 or tick_number % interval != 0:
+            return
+        try:
+            self.save_checkpoint(store)
+        except Exception:  # noqa: BLE001 — a failed checkpoint must not crash the run
+            self._ctx.logger.exception("Auto-checkpoint failed at tick %d.", tick_number)
 
     # ------------------------------------------------------------------ #
     #  Threaded loop

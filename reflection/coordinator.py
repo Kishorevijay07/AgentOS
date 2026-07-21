@@ -66,6 +66,11 @@ class ReflectionCoordinator:
     def replans_done(self) -> int:
         return self._replans_done
 
+    def restore(self, replans_done: int) -> None:
+        """Restore the spent-budget counter from a checkpoint (so a resumed run
+        cannot exceed ``max_replans`` across the crash boundary)."""
+        self._replans_done = replans_done
+
     def process(self, outcomes: List[ExecutionOutcome]) -> List[UUID]:
         """
         Reflect on *outcomes* and inject any follow-up tasks. Returns the ids of

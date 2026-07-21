@@ -166,6 +166,7 @@ scheduler.run_until_idle()
 | `task_graph/` | The dependency map. A thread-safe DAG that knows which tasks are ready, detects cycles, unlocks dependents on completion. |
 | `scheduling/` | The foreman. Matches ready tasks to workers **by capability** (never by name) behind a pluggable dispatch backend (local ↔ transport), with retry policies. |
 | `reflection/` | The critic. After a task runs, judges the output and — when it falls short — injects corrective/follow-up tasks into the live graph (the autonomous loop), bounded by a replan budget. |
+| `checkpoint/` | The save-game. Snapshots the graph (with per-task history) + reflection budget to a pluggable store (atomic JSON file today); a crashed run resumes exactly where it left off. |
 | `runtime/` | The site office. Manages the worker pool: lifecycle, timeouts, crash isolation, health checks, metrics. |
 | `distributed/` | The radio system. Typed message protocol, pluggable transport, worker discovery, heartbeats, remote worker nodes. |
 | `events/` | The announcement board. Publish/subscribe event bus — components react without knowing each other. |
@@ -226,7 +227,7 @@ distributed layer running full DAGs across simulated remote workers.
 | v0.6 | **Real intelligence**: OpenRouter `LLMClient` wired into `LLMPlanner` + LLM-backed coding/research workers |
 | v0.7 ✅ | One unified scheduler behind a `DispatchBackend` seam (local ↔ transport) + `RedisTransport` |
 | v0.8 ✅ | **The autonomous loop**: reflection + dynamic replanning (inject corrective tasks into the live graph, bounded by a replan budget) |
-| v0.9 | Checkpointing & persistence (durable, resumable runs) |
+| v0.9 ✅ | **Checkpointing & resume**: snapshot the graph (with per-task history) + reflection budget; survive a crash and resume without re-doing work |
 | v1.0 | HTTP API, Kubernetes deployment, plugin workers |
 
 ## Documentation

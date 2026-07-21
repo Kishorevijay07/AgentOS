@@ -42,5 +42,10 @@ class KernelSettings(BaseModel):
         gt=0,
         description="Missed-heartbeat threshold after which an agent is marked OFFLINE.",
     )
+    checkpoint_every_ticks: int = Field(
+        default=0,
+        ge=0,
+        description="Auto-save a checkpoint every N ticks (0 = disabled).",
+    )
 
     model_config = {"frozen": True}

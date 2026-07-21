@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+from checkpoint.store import CheckpointStore
 from config.settings import KernelSettings
 from events.bus import AbstractEventBus, InMemoryEventBus
 from reflection.coordinator import ReflectionCoordinator
@@ -45,6 +46,8 @@ class KernelContext:
     logger: logging.Logger
     #: Optional autonomous-loop coordinator; None → reflection disabled (default).
     reflection: Optional[ReflectionCoordinator] = None
+    #: Optional durable checkpoint store; None → checkpointing disabled (default).
+    checkpoint_store: Optional[CheckpointStore] = None
 
     @classmethod
     def in_memory(
@@ -61,6 +64,7 @@ class KernelContext:
         goal: Optional[str] = None,
         allowed_capabilities: Optional[list[str]] = None,
         max_replans: int = 5,
+        checkpoint_store: Optional[CheckpointStore] = None,
     ) -> "KernelContext":
         """
         Build the default in-memory service graph, honouring any override.
@@ -116,4 +120,5 @@ class KernelContext:
             settings=settings,
             logger=logger,
             reflection=reflection,
+            checkpoint_store=checkpoint_store,
         )
